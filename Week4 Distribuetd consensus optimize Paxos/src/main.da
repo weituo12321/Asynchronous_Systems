@@ -1,0 +1,821 @@
+import sys
+import random
+import time
+import matplotlib.pyplot as plt
+import numpy as np
+from statistics import stdev
+from subprocess import call
+
+
+DELAY = 0              # default delay time for the message sending
+LOST = 0.0             # default rate of the message loss
+LEARNERTIMELIMIT = 10  # default time limit for the learners 
+PROPOSERTIMELIMIT = 1  # default time limit for the proposers 
+
+def cprint(color,mes):
+    """
+    color print to highlight some messages.
+    """
+    if color == 'r':
+        fore = 31
+    elif color == 'g':
+        fore = 32
+    elif color == 'b':
+        fore = 36
+    elif color == 'y':
+        fore = 33
+    else:
+        fore = 37
+    color = "\x1B[%d;%dm" % (1,fore)
+    print ("%s %s\x1B[0m" % (color,mes))
+
+def isLoss(LOST):  
+    """
+    this function is to judge if the message is lost via comparing a random number 
+    with the LOST value
+    """
+    r = random.uniform(0,1)
+    return True if r <= LOST else False
+
+def anyof(s):
+    """return any element of set s if s is not empty or 'None' otherwise"""
+    return next(iter(s)) if s else None
+
+
+
+########### Proposer Classses ####################
+
+########### Original Proposer
+class Proposer(process):
+    def setup(acceptors):
+        self.n = None              # proposal number
+        self.majority = acceptors  # majority of acceptors; all in other papers
+
+    def to_consent():
+        n = (0, self.id) if n == None else (n[0]+1, self.id)  # pick a prop num
+        sendMSG(('prepare', n),  majority, DELAY)  # use the new send function below
+        if await(len(setof(a, received(('respond', _n, _), from_= a)))
+                 > len(acceptors)/2):
+            v = anyof(setof(v, received(('respond', _n, (n2, v))),
+                            n2==max(setof(n2, received(('respond', _n, (n2, _))))))
+                      or {random.randint(1,100)})  # pick any value, here in 1..100
+            responded = setof(a, received(('respond', _n, _), from_= a))
+            sendMSG(('accept', n, v), responded, DELAY)
+            output('### chose', n, v)
+
+    def receive(msg= ('done',)):          ##
+        output('terminating'); 
+        exit()     ##
+
+    # add a new send message function here
+    def sendMSG(message, to, delay):
+        """
+        Modify the function to add delay time and judge if the the message is lost 
+        """
+        if isLoss(LOST):
+            output("proposer msg: %s is lost" % (message,))
+        else:
+            time.sleep(random.randint(0, delay))
+            send(message, to = to)
+
+    def run():
+        while True: to_consent()
+
+
+############# Proposer with preemption 
+class ProposerPreemp(process):
+    def setup(acceptors):
+        self.n = None              # proposal number
+        self.majority = acceptors  # majority of acceptors; all in other papers
+
+    def to_consent():
+        n = (0, self.id) if n == None else (n[0]+1, self.id)  # pick a prop num
+        sendMSG(('prepare', n), majority, DELAY)  # use the modified send function
+        
+        # no proposer accept any preemption promise from acceptors
+        if await(len(setof(a, received(('respond', _n, _), from_= a)))
+                 > len(acceptors)/2 and not some(received(('preemption',n,n1)), has = n1 > n)):
+            v = anyof(setof(v, received(('respond', _n, (n2, v))),
+                            n2==max(setof(n2, received(('respond', _n, (n2, _))))))
+                      or {random.randint(1,100)})  # pick any value, here in 1..100
+            responded = setof(a, received(('respond', _n, _), from_= a))
+            sendMSG(('accept', n, v), responded, DELAY)
+            output('### chose', n, v)
+        
+        #elif some(recevied(('preemption', n, n1)), has= n < n1):
+
+        #    n = anyof(setof(n1, received(('preemption', n, n1)),
+        #                    n1==max(setof(n1, received(('preemption', n, n1))))))
+  
+    def receive(msg= ('done',)):          ##
+        output('terminating'); exit()     ##
+
+    def receive(msg=('preemption',n,n1)):
+        """
+        if the proposer receive preemption from acceptors, then promote next
+        proposal number directly to the maximum of all the preemption promises.
+        """
+        if n > n1:
+            return
+        n = anyof(setof(n1, received(('preemption', n, n1)),
+                    n1==max(setof(n1, received(('preemption', n, n1))))))
+        self.n = (n[0], self.id)
+
+    def sendMSG(message, to, delay):
+        """
+        same as above, add delay time and loss judge
+        """
+        if isLoss(LOST):
+            output("proposer msg: %s is lost" % (message,))
+        else:
+            time.sleep(random.randint(0, delay))
+            send(message, to = to)
+        
+    def run():
+        while True: to_consent()
+
+############## Proposer with time out
+class ProposerTime(process):
+    def setup(acceptors):
+        self.n = None              # proposal number
+        self.majority = acceptors  # majority of acceptors; all in other papers
+
+    def to_consent():
+        n = (0, self.id) if n == None else (n[0]+1, self.id)  # pick a prop num
+        sendMSG(('prepare', n),  majority, DELAY)
+        if await((len(setof(a, received(('respond', _n, _), from_= a)))
+                 > len(acceptors)/2)):
+            v = anyof(setof(v, received(('respond', _n, (n2, v))),
+                            n2==max(setof(n2, received(('respond', _n, (n2, _))))))
+                      or {random.randint(1,100)})  # pick any value, here in 1..100
+            responded = setof(a, received(('respond', _n, _), from_= a))
+            sendMSG(('accept', n, v), responded, DELAY)
+            output('### chose', n, v)
+        elif (timeout(PROPOSERTIMELIMIT)):   # if the wait time excceeds the time limit
+            output("Exceed time limit : ", n)
+
+    def receive(msg= ('done',)):          ##
+        output('terminating'); 
+        exit()     ##
+
+    def sendMSG(message, to, delay):
+        """
+        same as above, add delay time and loss judge
+        """
+        if isLoss(LOST):
+            output("acceptor msg: %s is lost" % (message,))
+        else:
+            time.sleep(random.randint(0, delay))
+            send(message, to= to)
+
+    def run():
+        while True: to_consent()
+
+
+##############  Proposer with time out and preemption
+class ProposerTimePreemp(process):
+    def setup(acceptors):
+        self.n = None              # proposal number
+        self.majority = acceptors  # majority of acceptors; all in other papers
+
+    def to_consent():
+        n = (0, self.id) if n == None else (n[0]+1, self.id)  # pick a prop num
+        sendMSG(('prepare', n), majority, DELAY)
+
+        # no proposer accept preemption promise from acceptors
+        if await(len(setof(a, received(('respond', _n, _), from_= a)))
+                 > len(acceptors)/2 and not some(received(('preemption',n,n1)), has = n1 > n)):
+            v = anyof(setof(v, received(('respond', _n, (n2, v))),
+                            n2==max(setof(n2, received(('respond', _n, (n2, _))))))
+                      or {random.randint(1,100)})  # pick any value, here in 1..100
+            responded = setof(a, received(('respond', _n, _), from_= a))
+            sendMSG(('accept', n, v), responded, DELAY)
+            output('### chose', n, v)
+        elif (timeout(PROPOSERTIMELIMIT)):  # if the waiting time exceeds the time limit
+            output("Exceed time limit : ", n)
+        
+  
+    def receive(msg= ('done',)):          ##
+        output('terminating'); exit()     ##
+
+    def receive(msg=('preemption',n,n1)):
+        """
+        if receive preemption from acceptors then modify the proposal number
+        directly to the maximum of preemptions 
+        """
+        if n > n1:
+            return
+        n = anyof(setof(n1, received(('preemption', n, n1)),
+                    n1==max(setof(n1, received(('preemption', n, n1))))))
+        self.n = (n[0], self.id)
+
+    def sendMSG(message, to, delay):
+        """
+        same as above, add delay time and loss judge
+        """
+        if isLoss(LOST):
+            output("proposer msg: %s is lost" % (message,))
+        else:
+            time.sleep(random.randint(0, delay))
+            send(message, to = to)
+        
+    def run():
+        while True: to_consent()
+
+
+##########  Acceptor Classes  ###################
+
+########  Original acceptor
+class Acceptor(process):
+    def setup(learners): pass
+
+    def receive(msg= ('prepare', n), from_= p):
+        if each(sent(('respond', n2, _)), has= n > n2):
+            max_prop = anyof(setof((n, v), sent(('accepted', n, v)),
+                                   n==max(setof(n, sent(('accepted', n, _))))))
+            sendMSG(('respond', n, max_prop), p, DELAY)  # use modified send function
+
+    def receive(msg= ('accept', n, v)):
+        if not some(sent(('respond', n2, _)), has= n2 > n):
+            sendMSG(('accepted', n, v), learners,DELAY)
+
+    def receive(msg= ('done',)):          ##
+        ##output('terminating'); 
+        exit()     ##
+
+    def sendMSG(message, to, delay):
+        """
+        same as above, add delay time and loss judge
+        """
+        if isLoss(LOST):
+            output("acceptor msg: %s is lost" % (message,))
+        else:
+            time.sleep(random.randint(0, delay))
+            send(message, to= to)
+
+    def run():
+        await(False)
+       
+
+###########  Acceptor for preemption
+class AcceptorPreemp(process):
+    def setup(learners): pass
+
+    def receive(msg= ('prepare', n), from_= p):
+        if each(sent(('respond', n2, _)), has= n > n2):
+            max_prop = anyof(setof((n, v), sent(('accepted', n, v)),
+                                   n==max(setof(n, sent(('accepted', n, _))))))
+            sendMSG(('respond', n, max_prop), p, DELAY)
+        else:
+            # if the received proposal number is less than responded proposal number
+            # then the acceptor assigns a preemption to proposer and tells the   
+            # proposer the maximum responded proposal number 
+            max_prop = anyof(setof((n, v), sent(('respond', n, v)),
+                                   n==max(setof(n, sent(('respond', n, _))))))
+            sendMSG(('preemption', n, max_prop[0]), p, DELAY)
+
+    def receive(msg= ('accept', n, v)):
+        if not some(sent(('respond', n2, _)), has= n2 > n):
+            send(('accepted', n, v), to= learners)
+
+    def receive(msg= ('done',)):          ##
+        output('terminating'); exit()     ##
+    
+    def sendMSG(message, to, delay):
+        """
+        same as above, add delay time and loss judge
+        """
+        if isLoss(LOST):
+            output("acceptor msg: %s is lost" % (message,))
+        else:
+            time.sleep(random.randint(0, delay))
+            send(message, to= to)
+
+    def run():
+        await(False)
+
+############  Learner Classes ##############
+
+######### Original learner 
+class Learner(process):
+    def setup(acceptors, tester): pass   # add tester setup here 
+
+    def learn():
+        if await(some(received(('accepted', n, v)),
+                      has= len(setof(a, received(('accepted', _n, _v), from_=a)))
+                           > len(acceptors)/2)):
+            send(('learned', n, v), to= tester)    # send messages to testers 
+            output('learned', n, v)
+
+    def reveice(msg= ('done',)):   # if received done, then exit
+        exit()
+    def run():
+        learn()
+        #output('terminating')
+        await(False)
+
+
+######### Learner with timeout
+class LearnerTime(process):
+    def setup(acceptors, tester): pass   # add tester setup here
+
+    def learn():
+        if await(some(received(('accepted', n, v)),
+                      has= len(setof(a, received(('accepted', _n, _v), from_=a)))
+                           > len(acceptors)/2)):
+            send(('learned', n, v), to= tester)   # send messages to testers
+            output('learned', n, v)
+        elif (timeout(LEARNERTIMELIMIT)):   # if the wait time exceeds the limit
+            output("Exceed waiting time limit")
+
+    def receive(msg= ('done',)):   # if received done, then exit
+        exit()
+    def run():
+        learn()
+        #output('terminating')
+        await(False) 
+
+############# Tester class 
+class Tester(process):
+    def setup(nlearners): pass  # set up the number of the learners
+
+    def run():
+        """
+        judge the safety from the messages sent by learners
+        """
+        if await(len(setof(a, received(('learned', n, v), from_=a))) >= nlearners): # wait until received messages from learners
+            if (len(setof(n, received(('learned', n, _)))) != 1):   # if the messages received from learners are different
+                cprint('r', "correctness test: FAILED")      # then the safety is violated
+            else:
+                cprint('g', "correctness test: PASSED")    
+                
+
+
+def version1(nproposers, nacceptors, nlearners):
+    """
+    function to run original paxos
+    """
+    acceptors = new(Acceptor, num= nacceptors)
+    proposers = new(Proposer, (acceptors,), num= nproposers)
+    tester = new(Tester, (nlearners,),num= 1)     # set up testers
+    learners = new(Learner, (acceptors,tester,), num= nlearners)
+    for p in acceptors: setup(p, (learners,))
+    start(acceptors | proposers | learners | tester)
+
+    for p in learners: p.join()           ##
+    print('done')                         ##
+    da.send(('done',), to= (acceptors | proposers | learners))  ## da.send not in da-lang
+
+def version2(nproposers, nacceptors, nlearners):
+    """
+    function to run the paxos with preemption
+    """
+    acceptors = new(AcceptorPreemp, num= nacceptors)  # set up acceptors with preemption
+    proposers = new(ProposerPreemp, (acceptors,), num= nproposers) # set up proposers with preemption
+    tester = new(Tester, (nlearners,),num= 1)
+    learners = new(Learner, (acceptors,tester,), num= nlearners)  # set up original learners
+    for p in acceptors: setup(p, (learners,))
+    start(acceptors | proposers | learners | tester )
+
+    for p in learners: p.join()           ##
+    print('done')                         ##
+    da.send(('done',), to= (acceptors | proposers | learners))  ## da.send not in da-lang
+    
+def version3(nproposers, nacceptors, nlearners):
+    """
+    function to run the paxos with timeout
+    """
+    acceptors = new(Acceptor, num= nacceptors)  # set up original acceptors
+    proposers = new(ProposerTime, (acceptors,), num= nproposers) # set up proposers with timeout
+    tester = new(Tester, (nlearners,),num= 1)
+    learners = new(LearnerTime, (acceptors,tester,), num= nlearners)   # set up learners with timeout
+    for p in acceptors: setup(p, (learners,))
+    start(acceptors | proposers | learners | tester)
+
+    for p in learners: p.join()           ##
+    print('done')                         ##
+    da.send(('done',), to= (acceptors | proposers | learners))  ## da.send not in da-lang
+
+
+def version4(nproposers, nacceptors, nlearners):
+    """
+    function to run the paxos with timeout and preemption
+    """
+    acceptors = new(AcceptorPreemp, num= nacceptors)  # set up the acceptors with preemption
+    proposers = new(ProposerTimePreemp, (acceptors,), num= nproposers) # set up proposers with preemption as well as timeout
+    tester = new(Tester, (nlearners,),num= 1)
+    learners = new(LearnerTime, (acceptors,tester,), num= nlearners)  # set up learners with timeout
+    for p in acceptors: setup(p, (learners,))
+    start(acceptors | proposers | learners | tester)
+
+    for p in learners: p.join()           ##
+    print('done')                         ##
+    da.send(('done',), to= (acceptors | proposers | learners))  ## da.send not in da-lang
+
+def main():
+    
+    global LOST
+    global DELAY
+
+    nproposers = int(sys.argv[1]) if len(sys.argv) > 1 else 3
+    nacceptors = int(sys.argv[2]) if len(sys.argv) > 2 else 3
+    nlearners = int(sys.argv[3]) if len(sys.argv) > 3 else 3
+    REPETITION = int(sys.argv[4]) if len(sys.argv) > 4 else 1
+    LOSTS = float(sys.argv[5]) if len(sys.argv) > 5 else 0
+    DELAYS = int(sys.argv[6]) if len(sys.argv) > 6 else 1
+    WAITS = int(sys.argv[7]) if len(sys.argv) > 7 else 0 
+    PROPOSERTIMELIMIT = int(sys.argv[8]) if len(sys.argv) > 8 else 1
+    LEARNERTIMELIMIT = int(sys.argv[9]) if len(sys.argv) > 9 else 10
+
+
+    #print("basic Paxos")
+    #version1(nproposers, nacceptors, nlearners)
+
+    #print("Paxos with preemption")
+    #version2(nproposers, nacceptors, nlearners)
+
+    #print("Paxos with timeout")
+    #version3(nproposers, nacceptors, nlearners)
+
+    #print ("Paxos with preemption and timeout")
+    #version4(nproposers, nacceptors, nlearners)
+
+  
+###############  Draw and compare different parameters
+
+############### using different loss rate
+    WAIT = WAITS / 5       # fix the wait time 
+    DELAY = DELAYS / 5     # set the range of delay time
+    losts = [LOSTS/5, LOSTS *2/5, LOSTS *3/5, LOSTS *4/5, LOSTS]
+    aveetime1, avecputime1 = list(), list()
+    stdetime1, stdcputime1 = list(), list()  # for the paxos
+    aveetime2, avecputime2 = list(), list()
+    stdetime2, stdcputime2 = list(), list()  # for the paxos with preemption
+    aveetime3, avecputime3 = list(), list()
+    stdetime3, stdcputime3 = list(), list()  # for the paxos with timeout
+    aveetime4, avecputime4 = list(), list()
+    stdetime4, stdcputime4 = list(), list()  # for the paxos with timeout + preemption
+    for num in losts:
+        LOST = num
+        etime1, cputime1 = list(), list()
+        for n in range(REPETITION):         # prepetition times of each version 
+            estart, cpustart = time.time(), time.process_time()
+            version1(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime1.append(estop - estart)
+            cputime1.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime1.append(sum(etime1) / len(etime1))   # get the average elapsed time
+        stdetime1.append(stdev(etime1))               # get the standard deviation of elapsed time
+        avecputime1.append(sum(cputime1) / len(cputime1))   # get the average cpu time
+        stdcputime1.append(stdev(cputime1))                  # get the standard deviation of cpu time
+    
+        etime2, cputime2 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version2(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime2.append(estop - estart)
+            cputime2.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime2.append(sum(etime2) / len(etime2))      # get the average elapsed time
+        stdetime2.append(stdev(etime2))                  # get the standard deviation of elapsed time
+        avecputime2.append(sum(cputime2) / len(cputime2)) # get the average cpu time
+        stdcputime2.append(stdev(cputime2))              # get the standard deviation of cpu time
+
+        etime3, cputime3 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version3(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime3.append(estop - estart)
+            cputime3.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime3.append(sum(etime3) / len(etime3))       # get the average elapsed time
+        stdetime3.append(stdev(etime3))                   # get the standard deviation of elapsed time
+        avecputime3.append(sum(cputime3) / len(cputime3))  # get the average cpu time
+        stdcputime3.append(stdev(cputime3))               # get the standard deviation of cpu time
+
+        etime4, cputime4 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version4(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime4.append(estop - estart)
+            cputime4.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime4.append(sum(etime4) / len(etime4))        # get the average elapsed time
+        stdetime4.append(stdev(etime4))                    # get the standard deviation of elapsed time
+        avecputime4.append(sum(cputime4) / len(cputime4))  # get the average cpu time
+        stdcputime4.append(stdev(cputime4))                # get the standard deviation of cpu time
+
+
+    #call(["rm -f *.png"], shell = True)
+    call(["mkdir ./loss_results"], shell = True)
+    plt.figure()
+    plt.title('Comparison average elapsed time', size = 14)
+    plt.xlabel('loss rate', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(losts, aveetime1, label = 'Paxos')
+    plt.plot(losts, aveetime2, label = 'PaxosPreemption')
+    plt.plot(losts, aveetime3, label = 'PaxosTimeout')
+    plt.plot(losts, aveetime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left",prop= {'size':5})
+    filename = './loss_results/' + 'averagetime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison average cpu time', size = 14)
+    plt.xlabel('loss rate', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(losts, avecputime1, label = 'Paxos')
+    plt.plot(losts, avecputime2, label = 'PaxosPreemption')
+    plt.plot(losts, avecputime3, label = 'PaxosTimeout')
+    plt.plot(losts, avecputime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size':5})
+    filename = './loss_results/' + 'averagecputime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison std elapsed time', size = 14)
+    plt.xlabel('loss rate', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(losts, stdetime1, label = 'Paxos')
+    plt.plot(losts, stdetime2, label = 'PaxosPreemption')
+    plt.plot(losts, stdetime3, label = 'PaxosTimeout')
+    plt.plot(losts, stdetime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size': 5})
+    filename = './loss_results/' + 'stdetime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison std cpu time', size = 14)
+    plt.xlabel('loss rate', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(losts, stdcputime1, label = 'Paxos')
+    plt.plot(losts, stdcputime2, label = 'PaxosPreemption')
+    plt.plot(losts, stdcputime3, label = 'PaxosTimeout')
+    plt.plot(losts, stdcputime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size': 5})
+    filename = './loss_results/' + 'stdcputime.png'
+    plt.savefig(filename)
+
+################## end of performance with different loss rate ################
+
+
+################# performance with different message delay time #############
+
+    delays = [DELAYS/5, DELAYS*2/5, DELAYS*3/5, DELAYS *4/5, DELAYS]
+    LOST = LOSTS*3/5           # fix the loss rate
+    WAIT = WAITS / 5           # fixt the round wait time
+    aveetime1, avecputime1 = list(), list()
+    stdetime1, stdcputime1 = list(), list()      # for the paxos
+    aveetime2, avecputime2 = list(), list()
+    stdetime2, stdcputime2 = list(), list()      # for the paxos with preemption
+    aveetime3, avecputime3 = list(), list()
+    stdetime3, stdcputime3 = list(), list()       # for the paxos with timeout
+    aveetime4, avecputime4 = list(), list()
+    stdetime4, stdcputime4 = list(), list()       # for the paxos with preemption + timeout
+    for delay in delays:
+        DELAY = delay
+        etime1, cputime1 = list(), list() 
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version1(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime1.append(estop - estart)
+            cputime1.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime1.append(sum(etime1) / len(etime1))           # get the average elapsed time
+        stdetime1.append(stdev(etime1))                       # get the standard deviation of elapsed time
+        avecputime1.append(sum(cputime1) / len(cputime1))     # get the average cpu time
+        stdcputime1.append(stdev(cputime1))                   # get the standard deviation of cpu time
+    
+        etime2, cputime2 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version2(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime2.append(estop - estart)
+            cputime2.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime2.append(sum(etime2) / len(etime2))       # get the average elapsed time
+        stdetime2.append(stdev(etime2))                   # get the standard deviation of elapsed time
+        avecputime2.append(sum(cputime2) / len(cputime2)) # get the average cpu time
+        stdcputime2.append(stdev(cputime2))               # get the standard deviation of cpu time
+
+        etime3, cputime3 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version3(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime3.append(estop - estart)
+            cputime3.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime3.append(sum(etime3) / len(etime3))    # get the average elapsed time
+        stdetime3.append(stdev(etime3))                 # get the standard deviation of elapsed time
+        avecputime3.append(sum(cputime3) / len(cputime3))   # get the average cpu time
+        stdcputime3.append(stdev(cputime3))                 # get the standard deviation of cpu time
+
+        etime4, cputime4 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version4(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime4.append(estop - estart)
+            cputime4.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime4.append(sum(etime4) / len(etime4))            # get the average elapsed time
+        stdetime4.append(stdev(etime4))                        # get the standard deviation of elapsed time
+        avecputime4.append(sum(cputime4) / len(cputime4))      # get the average  cpu time
+        stdcputime4.append(stdev(cputime4))                    # get the standard deviation of cpu time
+
+
+    #call(["rm -f *.png"], shell = True)
+    call(["mkdir ./delay_results"], shell = True)
+    plt.figure()
+    plt.title('Comparison average elapsed time', size = 14)
+    plt.xlabel('delays', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(delays, aveetime1, label = 'Paxos')
+    plt.plot(delays, aveetime2, label = 'PaxosPreemption')
+    plt.plot(delays, aveetime3, label = 'PaxosTimeout')
+    plt.plot(delays, aveetime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left",prop= {'size':5})
+    filename = './delay_results/' + 'averagetime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison average cpu time', size = 14)
+    plt.xlabel('delays', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(delays, avecputime1, label = 'Paxos')
+    plt.plot(delays, avecputime2, label = 'PaxosPreemption')
+    plt.plot(delays, avecputime3, label = 'PaxosTimeout')
+    plt.plot(delays, avecputime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size':5})
+    filename = './delay_results/' + 'averagecputime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison std elapsed time', size = 14)
+    plt.xlabel('delays', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(delays, stdetime1, label = 'Paxos')
+    plt.plot(delays, stdetime2, label = 'PaxosPreemption')
+    plt.plot(delays, stdetime3, label = 'PaxosTimeout')
+    plt.plot(delays, stdetime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size': 5})
+    filename = './delay_results/' + 'stdetime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison std cpu time', size = 14)
+    plt.xlabel('delays', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(delays, stdcputime1, label = 'Paxos')
+    plt.plot(delays, stdcputime2, label = 'PaxosPreemption')
+    plt.plot(delays, stdcputime3, label = 'PaxosTimeout')
+    plt.plot(delays, stdcputime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size': 5})
+    filename = './delay_results/' + 'stdcputime.png'
+    plt.savefig(filename)
+    
+####################### end of performance with different delay time #################
+
+
+################# performance with different round wait time #############
+    
+    DELAY= DELAYS/5                  # fix the delay range
+    LOST = LOSTS*3/5                 # fix the loss rate
+    waits = [WAITS/5, WAITS*2/5, WAITS*3/5, WAITS*4/5, WAITS]
+    aveetime1, avecputime1 = list(), list()
+    stdetime1, stdcputime1 = list(), list()              # for the paxos  
+    aveetime2, avecputime2 = list(), list()
+    stdetime2, stdcputime2 = list(), list()              # for the paxos with preemption
+    aveetime3, avecputime3 = list(), list()
+    stdetime3, stdcputime3 = list(), list()              # for the paxos with timeout
+    aveetime4, avecputime4 = list(), list()
+    stdetime4, stdcputime4 = list(), list()              # for the paxos with timeout + preemption
+    for wait in waits:
+        WAIT = wait
+        etime1, cputime1 = list(), list() 
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version1(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime1.append(estop - estart)
+            cputime1.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime1.append(sum(etime1) / len(etime1))          # get the average elapsed time
+        stdetime1.append(stdev(etime1))                       # get the standard deviation of elapsed time
+        avecputime1.append(sum(cputime1) / len(cputime1))     # get the average cpu time
+        stdcputime1.append(stdev(cputime1))                   # get the standard deviation of cpu time
+    
+        etime2, cputime2 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version2(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime2.append(estop - estart)
+            cputime2.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime2.append(sum(etime2) / len(etime2))           # get the average elapsed time
+        stdetime2.append(stdev(etime2))                       # get the standard deviation of elapsed time
+        avecputime2.append(sum(cputime2) / len(cputime2))     # get the average cpu time
+        stdcputime2.append(stdev(cputime2))                   # get the standard deviation of cpu time
+
+        etime3, cputime3 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version3(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime3.append(estop - estart)
+            cputime3.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime3.append(sum(etime3) / len(etime3))             # get the average elapsed time
+        stdetime3.append(stdev(etime3))                         # get the standard deviation of elapsed time
+        avecputime3.append(sum(cputime3) / len(cputime3))       # get the average cpu time
+        stdcputime3.append(stdev(cputime3))                     # get the standard deviation of cpu time
+
+        etime4, cputime4 = list(), list()
+        for n in range(REPETITION):
+            estart, cpustart = time.time(), time.process_time()
+            version4(nproposers, nacceptors, nlearners)
+            estop, cpustop = time.time(), time.process_time()
+            etime4.append(estop - estart)
+            cputime4.append(cpustop - cpustart)
+            time.sleep(WAIT)
+        aveetime4.append(sum(etime4) / len(etime4))           # get the average elapsed time
+        stdetime4.append(stdev(etime4))                       # get the standard deviation of elapsed time
+        avecputime4.append(sum(cputime4) / len(cputime4))     # get the average cpu time
+        stdcputime4.append(stdev(cputime4))                   # get the standard deviation of elapsed time
+ 
+
+    #call(["rm -f *.png"], shell = True)
+    call(["mkdir ./wait_results"], shell = True)
+    plt.figure()
+    plt.title('Comparison average elapsed time', size = 14)
+    plt.xlabel('waits', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(waits, aveetime1, label = 'Paxos')
+    plt.plot(waits, aveetime2, label = 'PaxosPreemption')
+    plt.plot(waits, aveetime3, label = 'PaxosTimeout')
+    plt.plot(waits, aveetime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left",prop= {'size':5})
+    filename = './wait_results/' + 'averagetime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison average cpu time', size = 14)
+    plt.xlabel('waits', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(waits, avecputime1, label = 'Paxos')
+    plt.plot(waits, avecputime2, label = 'PaxosPreemption')
+    plt.plot(waits, avecputime3, label = 'PaxosTimeout')
+    plt.plot(waits, avecputime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size':5})
+    filename = './wait_results/' + 'averagecputime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison std elapsed time', size = 14)
+    plt.xlabel('waits', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(waits, stdetime1, label = 'Paxos')
+    plt.plot(waits, stdetime2, label = 'PaxosPreemption')
+    plt.plot(waits, stdetime3, label = 'PaxosTimeout')
+    plt.plot(waits, stdetime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size': 5})
+    filename = './wait_results/' + 'stdetime.png'
+    plt.savefig(filename)
+
+
+    plt.figure()
+    plt.title('Comparison std cpu time', size = 14)
+    plt.xlabel('waits', size = 14)
+    plt.ylabel('time', size = 14)
+    plt.plot(waits, stdcputime1, label = 'Paxos')
+    plt.plot(waits, stdcputime2, label = 'PaxosPreemption')
+    plt.plot(waits, stdcputime3, label = 'PaxosTimeout')
+    plt.plot(waits, stdcputime4, label = 'PaxosTimeoutPreemption')
+    plt.legend(["Paxos", "PaxosPreemption", "PaxosTimeout", "PaxosTimeoutPreemption"], loc = "upper left", prop= {'size': 5})
+    filename = './wait_results/' + 'stdcputime.png'
+    plt.savefig(filename)
+    
+
+
+# This is an executable specification of the algorithm described in
+# Lamport, L. (2001).  Paxos Made Simple.  ACM SIGACT News 
+# (Distributed Computing Column), 32(4):51-58, December.
+
+# This code includes setup and termination for running repeated rounds until
+# the learners all terminate after learning the consent value.

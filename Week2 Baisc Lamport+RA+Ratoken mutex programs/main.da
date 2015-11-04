@@ -1,0 +1,361 @@
+import random
+import time
+import sys
+import numpy as np
+import matplotlib.pyplot as plt
+from subprocess import call
+
+def cprint(color,mes):
+    if color == 'r':
+        fore = 31
+    elif color == 'g':
+        fore = 32
+    elif color == 'b':
+        fore = 36
+    elif color == 'y':
+        fore = 33
+    else:
+        fore = 37
+    color = "\x1B[%d;%dm" % (1,fore)
+    print ("%s %s\x1B[0m" % (color,mes))
+
+class lamutexP(process):
+    def setup(s:set, nrequests:int):  # s is set of all other processes
+        self.q = set()
+
+    def mutex(task):
+        -- request
+        c = logical_clock()
+        send(('request', c, self.id), to= s)
+        q.add(('request', c, self.id))
+        await(each(('request', c2, p) in q,
+                   has= (c2, p)==(c, self.id) or (c, self.id) < (c2, p)) and
+              each(p in s, has= some(received(('ack', c2, _p)), has= c2 > c)))
+        -- critical_section
+        task()
+        -- release
+        q.remove(('request', c, self.id))
+        send(('release', logical_clock(), self.id), to= s)
+
+    def receive(msg= ('request', c2, p)):
+        q.add(('request', c2, p))
+        send(('ack', logical_clock(), self.id), to= p)
+
+    def receive(msg= ('release', _, p)):
+#        q.remove(('request', _, p))  # pattern matching needed for _
+#        q.remove(anyof(setof(('request', c, p), ('request', c, _p) in q)))
+        for x in setof(('request', c, p), ('request', c, _p) in q):
+            q.remove(x); break
+#        for ('request', c, _p) in q: q.remove('request', c, p); break
+#        for (tag, c, p2) in q:
+#            if tag == 'request' and p2 == p:
+#                q.remove((tag, c, p2)); break
+
+    def run():
+        def task():
+            with open('output.txt', 'a+') as f:
+                cprint('b','in cs')
+                f.write('in cs\n')
+                cprint('g','out cs')
+                f.write('out cs\n')
+        for i in range(nrequests):
+            mutex(task)
+        send(('done', self.id), to= s)
+        await(each(p in s, has= received(('done', p))))
+        output('terminating')
+        
+
+
+
+class ramutexP(process):
+    def setup(ps:set, nrounds:int):
+      self.reqc = None
+      self.waiting = set()
+      self.replied = set()
+
+    def cs(task):
+      # to enter cs, enque and send request to all, then await replies from all
+        --start
+        reqc = logical_clock()
+        send(('Request', reqc), to=ps)
+
+        await(len(replied) == len(ps))
+
+      # critical section
+        task()
+
+      # to exit cs, deque and send releases to all
+        --release
+        reqc = None
+        send(('Reply', logical_clock()), to=waiting)
+        --end
+        waiting = set()
+        replied = set()
+
+    def run():
+        def anounce():
+            with open('output1.txt', 'a+') as f:
+                cprint('b','in cs')
+                f.write('in cs\n')
+                cprint('g','out cs')
+                f.write('out cs\n')
+        for i in range(nrounds) :
+            cs(anounce)
+        send(('Done', self.id), to=ps)
+        await(each(p in ps, has= received(('Done', p))))
+        output("Terminating..")
+
+    # when receiving requests from others, enque and reply
+    def receive(msg=('Request', timestamp), from_=source):
+        if (reqc == None or (timestamp, source) < (reqc, self.id)):
+            send(('Reply', logical_clock()), to=source)
+        else:
+            waiting.add(source)
+
+    def receive(msg=('Reply', c1), from_=source):
+        if reqc is not None and c1 > reqc:
+            replied.add(source)
+
+
+class ratokenP (process):
+    def setup(ps:set, nrounds:int, orig_token:bool):
+        self.clock = 0
+        self.token = dict((p, 0) for p in ps)
+
+    def cs(task):
+        --request
+        if not token_present():
+            clock += 1
+            send(('request', clock, self.id), to=ps)
+            await(token_present())
+        token[self.id] = clock
+
+        task()                  # critical section
+
+        --release
+        for p in ps:
+            if request_pending(p) and token_present():
+                #output("sending %r-> %r" % (token, p))
+                send(('access', token), to=p)
+                break
+
+    def receive(msg=('access', newtok)):
+        token = newtok
+
+    def receive(msg=('request', c, p)):
+        if request_pending(p) and token_present():
+            send(('access', token), to=p)
+
+    def request_pending(p):
+        # p has a request after it last had the token
+        return some(received(('request', c, _p)), has=(c > token[p]))
+
+    def token_present():
+        return (orig_token and not some(sent(('access', _))) or
+                some(received(('access', token1)),
+                     has= (not some(sent(('access', token2)),
+                                    has= (token2[self.id] > token1[self.id])))))
+
+    def run():
+        def anounce():
+            with open('output2.txt', 'a+') as f:
+                cprint('b','in cs')
+                f.write('in cs\n')
+                cprint('g','out cs')
+                f.write('out cs\n')
+        if token_present():
+            cprint('y', "I'm lucky!")
+        for i in range(nrounds):
+            cs(anounce)
+        send(('Done',), to=ps)
+        await(each(p in ps, has= received(('Done',), from_=p)))
+        output("Done!")
+
+def main():
+    if (len(sys.argv) == 5):   # this part is for the test on performance
+        nprocs = int(sys.argv[1])
+        nrqst = int(sys.argv[2])
+        nruns = int(sys.argv[3])
+        nrepet = int(sys.argv[4])
+        procslst = range(1, nprocs + 1, int((nprocs + 1) / nruns))
+        rqstlst = range(1, nrqst + 1, int((nrqst + 1) / nruns))
+
+        refer = list()
+        for nproc in procslst:
+            row = list()
+            for nrqs in rqstlst:
+                time1 = list() 
+                for dummy_ in range(nrepet):
+                    config(channel = 'fifo', clock = 'Lamport')
+                    rt1 = time.clock()
+                    ps = new(lamutexP, num = nproc)
+                    for p in ps: setup(p, (ps - {p}, nrqs))
+                    start(ps)
+                    for p in ps: p.join()
+                    rt2 = time.clock()
+                    time1.append(rt2 - rt1)
+                average1 = float(sum(time1)) / nrepet
+                
+                time2 = list()
+                for dummy_ in range(nrepet):
+                    config(clock = 'Lamport')
+                    rt1 = time.clock()
+                    ps = new(ramutexP, num = nproc)
+                    for p in ps: setup({p}, (ps - {p}, nrqs))
+                    start(ps)
+                    for p in ps: p.join()
+                    rt2 = time.clock()
+                    time2.append(rt2 - rt1)
+                average2 = float(sum(time2)) / nrepet
+
+                time3= list()
+                for dummy_ in range(nrepet):
+                    rt1 = time.clock()
+                    ps = new(ratokenP, num = nproc)
+                    p = ps.pop()
+                    setup(ps, (ps|{p}, nrqs, False))
+                    setup([p], (ps|{p}, nrqs, True))
+                    start(ps|{p})
+                    for p in ps: p.join()
+                    rt2 = time.clock()
+                    time3.append(rt2 - rt1)
+                average3 = float(sum(time3)) / nrepet
+                row.append([average1, average2, average3])
+            refer.append(row)
+        
+##################################
+# draw the result
+        call(["rm -f *.png"], shell = True)
+        # given the number of process
+        for idx in range(len(procslst)):
+            npro = procslst[idx]
+            row = refer[idx]
+            xData = rqstlst
+            la, ras, rat = [], [], []
+            for data in row:
+                la.append(data[0])
+                ras.append(data[1])
+                rat.append(data[2])
+            plt.figure()
+            plt.title('Comparison given ' + str(npro) + ' processes', size = 14)
+            plt.xlabel('requests', size = 14)
+            plt.ylabel('time', size = 14)
+            plt.plot(xData, la, label = 'Lamportts')
+            plt.plot(xData, ras, label = 'RAts')
+            plt.plot(xData, rat, label = 'RAtoken')
+            plt.legend(["LamportTS", "RATS", "RAToken"], loc = "upper left")
+            #plt.show()
+            #input("<Hit Enter To Continue>")
+            #plt.close()
+            filename = 'fxp' + str(npro) + '.png'
+            plt.savefig(filename)
+
+        for idx in range(len(rqstlst)):
+            nq = rqstlst[idx]
+            col = [row[idx] for row in refer]
+            xData = procslst
+            la, ras, rat = [], [], []
+            for data in col:
+                la.append(data[0])
+                ras.append(data[1])
+                rat.append(data[2])
+
+            plt.figure()
+            plt.title('Comparison given ' + str(nq) + ' requests', size = 14)
+            plt.xlabel('processes', size = 14)
+            plt.ylabel('time', size = 14)
+            plt.plot(xData, la, label = 'LamportTS')
+            plt.plot(xData, ras, label = 'RATS')
+            plt.plot(xData, rat, label = 'RAToken')
+            #plt.show()
+            plt.legend(["LamportTS", "RATS", "RAToken"], loc = "upper left")
+            #input("<Hit Enter to Continue>")
+            #plt.close()
+            filename = 'fxr' + str(nq) + '.png'
+            plt.savefig(filename)
+            call(['rm *.txt'], shell = True)
+
+
+    elif (len(sys.argv) == 4):   # this part is for the test on correctness
+        nprocs = int(sys.argv[1])
+        nrqst = int(sys.argv[2])
+        nnum = int(sys.argv[3])
+        procslst = [random.randint(1, nprocs) for dummy_ in range(nnum)]
+        rqstlst = [random.randint(1, nrqst) for dummy_ in range(nnum)]
+        zipped = zip(procslst, rqstlst)
+
+#################################
+# test on Lamport based on logical timestamp
+        config(channel= 'fifo', clock= 'Lamport')
+        fail = 0
+        for pair in zipped:
+            ps = new(lamutexP, num = pair[0])
+            # rt1 = time.clock()
+            for p in ps: setup(p, (ps-{p}, pair[1]))
+            start(ps)
+            for p in ps: p.join()
+            pre = ''
+            with open('output.txt', 'r+') as f:
+                for line in f:
+                    if line == pre:
+                        cprint('r','Oh G, something wrong!')
+                        fail += 1
+                        break
+                    pre = line
+            call(['rm', 'output.txt'])
+        success = nnum - fail
+
+####################################
+## test on Ricart and Agrawala's algorithm on logical timestamps
+        config(clock = 'Lamport')
+        fail1 = 0
+        for pair in zipped:
+            ps = new(ramutexP, num = pair[0])
+            for p in ps: setup({p}, (ps - {p}, pair[1]))
+            start(ps)
+            for p in ps: p.join()
+            pre = ''
+            with open('output1.txt', 'r+') as f:
+                for line in f:
+                    if line == pre:
+                        cprint('r', 'Oh G, something wrong!')
+                        fail1 += 1
+                        break
+                    pre = line
+            call(['rm', 'output1.txt'])
+        success1 = nnum - fail1
+
+#####################################
+## test on Ricart and Agrawala's algorithm on token
+        fail2 = 0
+        for pair in zipped:
+            ps = new(ratokenP, num = pair[0])
+            p = ps.pop()
+            setup(ps, (ps|{p}, pair[1], False))
+            setup([p], (ps|{p}, pair[1], True))
+            start(ps|{p})
+            for p in ps: p.join()
+            pre = ''
+            with open('output2.txt', 'r+') as f:
+                for line in f:
+                    if line == pre:
+                        cprint('r', 'Oh G, something wrong!')
+                        fail2 += 1
+                        break
+                    pre = line
+            call(['rm', 'output2.txt'])
+        success2 = nnum - fail2
+
+#####print the result
+        cprint('r','%s pairs parameters tested on Lamport,%s succeeded %s failed' %(nnum, success, fail))
+        cprint('r','%s pairs parameters tested on RA time stamp, %s succeeded %s failed' % (nnum, success1, fail1))
+        cprint('r','%s pairs parameters tested on RA token, %s succeeded %s failed' % (nnum, success2, fail2))
+
+    else:
+        nprocs = int(sys.argv[1]) if len(sys.argv) > 1 else 10
+        nrequests = int(sys.argv[2]) if len(sys.argv) > 2 else 1
+        config(channel = 'fifo', clock = 'Lamport')
+        ps = new(lamutexP, num = nprocs)
+        for p in ps: setup(p, (ps - {p}, nrequests))
+        start(ps)
+
